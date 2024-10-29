@@ -1,6 +1,6 @@
 [project]
 name = "brecup"
-version = "0.0.2"
+version = "0.0.3"
 authors = [{ name = "aquanjsw", email = "zhdlcc@gmail.com" }]
 description = "Simplify BililiveRecorder → biliup workflow."
 readme = "README.md"
