@@ -1,6 +1,6 @@
 [project]
 name = "brecup"
-version = "0.0.3"
+version = "0.0.4"
 authors = [{ name = "aquanjsw", email = "zhdlcc@gmail.com" }]
 description = "Simplify BililiveRecorder → biliup workflow."
 readme = "README.md"
@@ -9,6 +9,7 @@ classifiers = [
     "Programming Language :: Python :: 3",
     "Operating System :: OS Independent",
 ]
+dependencies = ["pyyaml", "loguru"]
 
 [project.scripts]
 brecup = "brecup:main.main"
