@@ -102,9 +102,38 @@ class VideoEditor:
         else:
             raise NotImplementedError('Too early launch of job')
         log = tempfile.mktemp()
-        cmd = f"CUDA_VISIBLE_DEVICES={device} ffmpeg -hwaccel auto -i '{record['video']}' -vf 'ass={record['danmaku']}' -c:v h264_nvenc -c:a copy -b 8192K -y -ss '{record['ss']}' -to '{record['to']}' '{record['output']}' > '{log}' 2>&1"
+        # cmd = f"CUDA_VISIBLE_DEVICES={device} ffmpeg -hwaccel auto -i "
+        # +f"'{record['video']}' -vf 'ass={record['danmaku']}' "
+        # +f"-c:v h264_nvenc -c:a copy -b 8192K -y "
+        # +f"{record['ss'] if 'ss' in record else ''} "
+        # +f"-to '{record['to']}' "
+        # +f"'{record['output']}' > '{log}' 2>&1"
+        cmd = [
+            "ffmpeg",
+            "-hwaccel",
+            "auto",
+            "-hwaccel_device",
+            str(device),
+            "-i",
+            record['video'],
+            '-vf',
+            f'ass={record["danmaku"]}',
+            '-c:v',
+            'h264_nvenc',
+            '-c:a',
+            'copy',
+            '-b',
+            '8192K',
+            '-y',
+        ]
+        if 'ss' in record:
+            cmd += ['-ss', record['ss']]
+        if 'to' in record:
+            cmd += ['-to', record['to']]
+        cmd += [record['output']]
         print(f'log for {record['title']}: {log}')
-        shell_exec(cmd)
+        # shell_exec(cmd)
+        subprocess.run(cmd, capture_output=True, check=True)
         if dry_run:
             time.sleep(1)
         print(f"releasing device {device} for {record['title']}")
