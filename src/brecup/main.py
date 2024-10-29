@@ -3,19 +3,23 @@ import argparse
 import concurrent.futures
 import os
 import pathlib
+import re
 import subprocess
-import tempfile
-import time
+import sys
+from concurrent.futures import ThreadPoolExecutor
 
 import yaml
+from loguru import logger
+
+logger.remove()
+logger.add(sys.stderr, level="DEBUG")
 
 parser = argparse.ArgumentParser(
     description="Simplify BililiveRecorder → biliup workflow."
 )
 parser.add_argument(
-    'config', type=str, help="Path to the config file.", default="config.brecup.py"
+    'config', type=str, help="Path to the config file.", default="config.brecup.yaml"
 )
-parser.add_argument('--dry-run', action='store_true', help="Dry run mode.")
 
 
 def load_config(path: str) -> dict:
@@ -23,91 +27,85 @@ def load_config(path: str) -> dict:
         return yaml.safe_load(fs)
 
 
-dry_run = False
-
-
-def shell_exec(cmd, dummy_output='') -> str:
-    want_output = dummy_output is not ''
-
-    print(cmd)
-
-    if dry_run:
-        if want_output:
-            return dummy_output
-        return ''
-
-    if want_output:
-        return (
-            subprocess.run(cmd, shell=True, capture_output=want_output, check=True)
-            .stdout.decode()
-            .strip()
-        )
-
-    subprocess.run(cmd, shell=True, capture_output=want_output, check=True)
-    return ''
-
-
 def get_resolution(video):
-    cmd = f"ffprobe -v error -select_streams v:0 -show_entries stream=width,height -of csv=s=x:p=0 '{video}'"
-    return shell_exec(cmd, dummy_output="1920x1080")
+    cmd = [
+        "ffprobe",
+        "-v",
+        "error",
+        "-select_streams",
+        "v:0",
+        "-show_entries",
+        "stream=width,height",
+        "-of",
+        "csv=s=x:p=0",
+        video,
+    ]
+    return subprocess.run(cmd, capture_output=True, check=True).stdout.decode().strip()
 
 
-def generate_danmaku_if_necessary(record):
-    if 'danmaku' not in record:
-        record['danmaku'] = pathlib.Path(record['video']).with_suffix('.xml')
-    xml = record['danmaku']
-    ass = pathlib.Path(record['danmaku']).with_suffix('.ass')
+def assign_property_danmaku(record):
+    record['danmaku'] = pathlib.Path(record['video']).with_suffix('.ass')
+    ass = record['danmaku']
+    xml = ass.with_suffix('.xml')
     resolution = get_resolution(record['video'])
-    cmd = f"danmaku-factory --ignore-warnings -o ass '{ass}' -i '{xml}' -r '{resolution}' -d -1 -O 127 --showmsgbox FALSE"
-    shell_exec(cmd)
-    record['danmaku'] = ass
+    cmd = [
+        'danmaku-factory',
+        '--ignore-warnings',
+        '-o',
+        'ass',
+        ass,
+        '-i',
+        xml,
+        '-r',
+        resolution,
+        '-d',
+        '-1',
+        '-O',
+        '127',
+        '--showmsgbox',
+        'FALSE',
+    ]
+    subprocess.run(cmd, check=True)
 
 
-def assign_video_output_path(records, output_dir):
-    cmd = f'mkdir -p {output_dir}'
-    shell_exec(cmd)
-    for record in records:
-        record['output'] = os.path.join(output_dir, os.path.basename(record['video']))
+def assign_property_output(record, output_dir):
+    record['output'] = os.path.join(output_dir, os.path.basename(record['video']))
 
 
-class VideoEditor:
+class Processor:
     def __init__(self, config: dict):
         # Get available devices
         if CUDA_VISIBLE_DEVICES := os.environ.get('CUDA_VISIBLE_DEVICES', ''):
-            devices = CUDA_VISIBLE_DEVICES.split('=')[-1].split(',')
+            devices = list(map(int, CUDA_VISIBLE_DEVICES.split('=')[-1].split(',')))
         else:
             cmd = f'nvidia-smi -L | wc -l'
-            devices = list(range(int(shell_exec(cmd, dummy_output=2))))
-        print(f'Found {len(devices)} devices')
+            count = (
+                subprocess.run(cmd, shell=True, capture_output=True, check=True)
+                .stdout.decode()
+                .strip()
+            )
+            devices = list(range(int(count)))
+        logger.info(f'Found {len(devices)} devices')
 
         # Assign BV if possible
-        bv = self._get_bv(
-            config,
-        )
-        if bv:
-            print(f'Found existing collection {bv}')
+        bv = self._get_bv(config)
 
-        self._device_in_using_indicators = [False for _ in devices]
+        self._device_in_using_flags = [False for _ in devices]
         self._devices = devices
         self._config = config
         self._bv = bv
 
-    def _job(self, record):
-        for i, v in enumerate(self._device_in_using_indicators):
-            if not v:
+    def _encode(self, record):
+        for i, value in enumerate(self._device_in_using_flags):
+            if not value:
                 device = i
-                print(f'picking device {device} for {record["title"]}')
-                self._device_in_using_indicators[device] = True
+                logger.info(f'Using device {device} for {record["title"]}')
+                self._device_in_using_flags[device] = True
                 break
         else:
-            raise NotImplementedError('Too early launch of job')
-        log = tempfile.mktemp()
-        # cmd = f"CUDA_VISIBLE_DEVICES={device} ffmpeg -hwaccel auto -i "
-        # +f"'{record['video']}' -vf 'ass={record['danmaku']}' "
-        # +f"-c:v h264_nvenc -c:a copy -b 8192K -y "
-        # +f"{record['ss'] if 'ss' in record else ''} "
-        # +f"-to '{record['to']}' "
-        # +f"'{record['output']}' > '{log}' 2>&1"
+            raise NotImplementedError(
+                "This should not happen, you've launch a job too early"
+            )
         cmd = [
             "ffmpeg",
             "-hwaccel",
@@ -131,60 +129,119 @@ class VideoEditor:
         if 'to' in record:
             cmd += ['-to', record['to']]
         cmd += [record['output']]
-        print(f'log for {record['title']}: {log}')
-        # shell_exec(cmd)
         subprocess.run(cmd, capture_output=True, check=True)
-        if dry_run:
-            time.sleep(1)
-        print(f"releasing device {device} for {record['title']}")
-        print(f"Output {record['output']}")
-        self._device_in_using_indicators[device] = False
+        logger.info(f"Releasing device {device} for {record['title']}")
+        self._device_in_using_flags[device] = False
+        logger.info(f"Encoding output {record['output']}")
 
         return record
 
-    def danmaku_embedding_and_video_clipping_and_upload(self):
-        with concurrent.futures.ThreadPoolExecutor(
-            max_workers=len(self._devices)
-        ) as executor:
-            futures = [
-                executor.submit(self._job, record) for record in self._config['records']
+    def run(self):
+        # One task per device shall be enough to exhaust the encoder/decoder
+        with ThreadPoolExecutor(len(self._devices)) as encoding_executor:
+            encoding_futures = [
+                encoding_executor.submit(self._encode, record)
+                for record in self._config['records']
+                if record['enabled']
             ]
-            with concurrent.futures.ThreadPoolExecutor(1) as upload_executor:
-                upload_futures = []
-                for future in concurrent.futures.as_completed(futures):
-                    record = future.result()
-                    upload_futures.append(upload_executor.submit(self._upload, record))
-                concurrent.futures.wait(upload_futures)
-            concurrent.futures.wait(futures)
+            with ThreadPoolExecutor(1) as uploading_executor:
+                uploading_futures = []
+                for encoding_future in concurrent.futures.as_completed(
+                    encoding_futures
+                ):
+                    record = encoding_future.result()
+                    uploading_futures.append(
+                        uploading_executor.submit(self._upload, record)
+                    )
+                logger.info('Waiting for uploading to finish...')
+                concurrent.futures.wait(uploading_futures)
+            logger.info('Waiting for encoding to finish...')
+            concurrent.futures.wait(encoding_futures)
+        logger.info('All tasks are done')
 
-    def _upload(self, r):
+    def _upload(self, record):
         c = self._config
         if not self._bv:
-            cmd = f"biliup -u '{c['cookies']}' upload --tid '{c['tid']}' --title '{c['title']}' --tag '{c['tag']}' --cover '{c['cover']}' '{r['output']}'"
-            shell_exec(cmd)
-            time.sleep(10)
-            print('Waiting for BV to be available')
-            self._bv = self._get_bv(c)
+            # Upload the first video
+            logger.info(
+                f"Uploading the video {record['output']} with title '{c['title']}'"
+            )
+            cmd = [
+                "biliup",
+                "-u",
+                c['cookies'],
+                "upload",
+                "--tid",
+                str(c['tid']),
+                "--title",
+                c['title'],
+                "--tag",
+                c['tag'],
+                "--cover",
+                c['cover'],
+                record['output'],
+            ]
+            output = (
+                subprocess.run(cmd, capture_output=True, check=True)
+                .stdout.decode()
+                .strip()
+            )
+            result = re.search(r'BV1\w{9}', output)
+            assert result, 'BV not found'
+            self._bv = result.group(0)
+            logger.info(f"BV {self._bv} is assigned to '{c['title']}'")
+            logger.warning(
+                "You may want to set the first video's title manually if it "
+                "belongs to a series"
+            )
             return
-        cmd = f"biliup -u '{c['cookies']}' append -v '{self._bv}' --title '{r['title']}' '{r['output']}'"
-        shell_exec(cmd)
 
-    def _get_bv(self, c):
-        cmd = f"biliup -u '{c['cookies']}' list | grep '{c['title']}' | cut -f1"
-        bv = shell_exec(cmd, dummy_output='BV1234567').strip()
-        print(f'Got BV: {bv}')
-        return bv
+        # Append a video
+        logger.info(f"Appending video '{record['title']}' to {self._bv}")
+        cmd = [
+            "biliup",
+            "-u",
+            c['cookies'],
+            "append",
+            "-v",
+            self._bv,
+            "--title",
+            record['title'],
+            record['output'],
+        ]
+        subprocess.run(cmd, capture_output=True, check=True)
+
+    def _get_bv(self, config: dict):
+        cmd = [
+            "biliup",
+            "-u",
+            config['cookies'],
+            "list",
+        ]
+        output = (
+            subprocess.run(cmd, capture_output=True, check=True).stdout.decode().strip()
+        )
+        for line in output.split('\n'):
+            if config['title'] in line:
+                bv = line.split()[0].strip()
+                logger.info(f"Found existing BV {bv} for '{config["title"]}'")
+                return bv
+        logger.info(f"No existing BV found for '{config["title"]}'")
+        return ''
 
 
 def main():
     global dry_run
     args = parser.parse_args()
-    dry_run = args.dry_run
     config = load_config(args.config)
-    [generate_danmaku_if_necessary(record) for record in config['records']]
-    assign_video_output_path(config['records'], config['output-dir'])
-    video_editor = VideoEditor(config)
-    video_editor.danmaku_embedding_and_video_clipping_and_upload()
+
+    os.makedirs(config['output-dir'], exist_ok=True)
+
+    for record in config['records']:
+        assign_property_danmaku(record)
+        assign_property_output(record, config['output-dir'])
+    processor = Processor(config)
+    processor.run()
 
 
 if __name__ == "__main__":

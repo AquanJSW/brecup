@@ -1,0 +1,8 @@
+{
+  "yaml.schemas": {
+    "https://gist.githubusercontent.com/AquanJSW/c9002c3577e26b57c85b922ecb8c6bc8/raw/96c3f5262ad57afa3a7753d7c571c7f6112b3bc5/brecup.schema.json": [
+      "*.brecup.yaml",
+      "*.brecup.yml"
+    ]
+  }
+}
