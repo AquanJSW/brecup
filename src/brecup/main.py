@@ -14,12 +14,25 @@ from loguru import logger
 logger.remove()
 logger.add(sys.stderr, level="DEBUG")
 
+
+def get_version():
+    import importlib.metadata
+
+    try:
+        # To be used in a package
+        version = importlib.metadata.version('brecup')
+    except:
+        version = '0.0'
+    return version
+
+
 parser = argparse.ArgumentParser(
-    description="Simplify BililiveRecorder → biliup workflow."
+    description="Simplify the BililiveRecorder → biliup-rs workflow."
 )
 parser.add_argument(
     'config', type=str, help="Path to the config file.", default="config.brecup.yaml"
 )
+parser.add_argument('-v', '--version', action='version', version=get_version())
 
 
 def load_config(path: str) -> dict:
